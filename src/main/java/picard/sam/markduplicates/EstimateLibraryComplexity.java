@@ -55,6 +55,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static java.lang.Math.pow;
 
@@ -440,22 +442,18 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         log.info("Will store " + MAX_RECORDS_IN_RAM + " read pairs in memory before sorting.");
 
         final List<SAMReadGroupRecord> readGroups = new ArrayList<SAMReadGroupRecord>();
-        final SortingCollection<PairedReadSequence> sorter;
         final boolean useBarcodes = (null != BARCODE_TAG || null != READ_ONE_BARCODE_TAG || null != READ_TWO_BARCODE_TAG);
+        ExecutorService threadService = Executors.newFixedThreadPool(40);
 
-        if (!useBarcodes) {
-            sorter = SortingCollection.newInstance(PairedReadSequence.class,
-                    new PairedReadCodec(),
+        final SortingCollection<PairedReadSequence> sorter =
+                SortingCollection.newInstance(
+                    PairedReadSequence.class,
+                    useBarcodes?
+                            new PairedReadWithBarcodesCodec() :
+                            new PairedReadCodec(),
                     new PairedReadComparator(),
                     MAX_RECORDS_IN_RAM,
                     TMP_DIR);
-        } else {
-            sorter = SortingCollection.newInstance(PairedReadSequence.class,
-                    new PairedReadWithBarcodesCodec(),
-                    new PairedReadComparator(),
-                    MAX_RECORDS_IN_RAM,
-                    TMP_DIR);
-        }
 
         // Loop through the input files and pick out the read sequences etc.
         final ProgressLogger progress = new ProgressLogger(log, (int) 1e6, "Read");
@@ -510,12 +508,24 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
                 }
 
                 if (prs.read1 != null && prs.read2 != null && prs.qualityOk) {
-                    sorter.add(prs);
+                    final PairedReadSequence tmpPrs = prs;
+                    threadService.submit(() -> {
+                        synchronized (sorter) {
+                            sorter.add(tmpPrs);
+                        }
+                    });
                 }
 
                 progress.record(rec);
             }
             CloserUtil.close(in);
+        }
+
+        threadService.shutdown();
+        try {
+            threadService.awaitTermination(1, TimeUnit.DAYS);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
         }
 
         log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates.", progress.getCount()));
@@ -552,29 +562,32 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
             } else {
                 final Map<String, List<PairedReadSequence>> sequencesByLibrary = splitByLibrary(group, readGroups);
 
+
                 // Now process the reads by library
-                for (final Map.Entry<String, List<PairedReadSequence>> entry : sequencesByLibrary.entrySet()) {
-                    final String library = entry.getKey();
-                    final List<PairedReadSequence> seqs = entry.getValue();
+                        for (final Map.Entry<String, List<PairedReadSequence>> entry : sequencesByLibrary.entrySet()) {
+                            final String library = entry.getKey();
+                            final List<PairedReadSequence> seqs = entry.getValue();
 
-                    Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
-                    Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
-                    if (duplicationHisto == null) {
-                        duplicationHisto = new Histogram<>("duplication_group_count", library);
-                        opticalHisto = new Histogram<>("duplication_group_count", "optical_duplicates");
-                        duplicationHistosByLibrary.put(library, duplicationHisto);
-                        opticalHistosByLibrary.put(library, opticalHisto);
-                    }
+                            Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
+                            Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
+                            if (duplicationHisto == null) {
+                                duplicationHisto = new Histogram<>("duplication_group_count", library);
+                                opticalHisto = new Histogram<>("duplication_group_count", "optical_duplicates");
+                                duplicationHistosByLibrary.put(library, duplicationHisto);
+                                opticalHistosByLibrary.put(library, opticalHisto);
+                            }
 
-                    algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
-                }
+                            algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
+                        }
 
                 ++groupsProcessed;
                 if (lastLogTime < System.currentTimeMillis() - 60000) {
                     log.info("Processed " + groupsProcessed + " groups.");
+                    System.out.println("Processed " + groupsProcessed + " groups.");
                     lastLogTime = System.currentTimeMillis();
                 }
             }
+
         }
 
         iterator.close();
