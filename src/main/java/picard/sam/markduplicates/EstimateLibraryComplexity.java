@@ -56,6 +56,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static java.lang.Math.pow;
@@ -430,6 +431,10 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         MAX_RECORDS_IN_RAM = (int) (Runtime.getRuntime().maxMemory() / sizeInBytes) / 2;
     }
 
+    private static final int BLOCK_RECORDS_NUMBER = 1000;
+    private static final int QUEUE_CAPACITY = 40;
+    private static AtomicBoolean ReadingSequences = new AtomicBoolean(false);
+
     /**
      * Method that does most of the work.  Reads through the input BAM file and extracts the
      * read sequences of each read pair and sorts them via a SortingCollection.  Then traverses
@@ -437,13 +442,13 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
      */
     @Override
     protected int doWork() {
+        long start = System.nanoTime();
         for (final File f : INPUT) IOUtil.assertFileIsReadable(f);
 
         log.info("Will store " + MAX_RECORDS_IN_RAM + " read pairs in memory before sorting.");
 
         final List<SAMReadGroupRecord> readGroups = new ArrayList<SAMReadGroupRecord>();
         final boolean useBarcodes = (null != BARCODE_TAG || null != READ_ONE_BARCODE_TAG || null != READ_TWO_BARCODE_TAG);
-        ExecutorService threadService = Executors.newFixedThreadPool(40);
 
         final SortingCollection<PairedReadSequence> sorter =
                 SortingCollection.newInstance(
@@ -455,6 +460,31 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
                     MAX_RECORDS_IN_RAM,
                     TMP_DIR);
 
+        final BlockingQueue<List<PairedReadSequence>> queue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
+
+        ReadingSequences.set(true);
+        final ExecutorService service = Executors.newFixedThreadPool(3);
+        service.submit(() -> {
+            try {
+                while (ReadingSequences.get() || queue.size() > 0) {
+                    List<PairedReadSequence> list;
+                    if (queue.size() <= 0) {
+                        Thread.sleep(10);
+                        continue;
+                    } else list = queue.take();
+                    service.submit(() -> {
+                        synchronized (sorter) {
+                            for (PairedReadSequence sequence : list) {
+                                sorter.add(sequence);
+                            }
+                        }
+                    });
+                }
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        });
+
         // Loop through the input files and pick out the read sequences etc.
         final ProgressLogger progress = new ProgressLogger(log, (int) 1e6, "Read");
         for (final File f : INPUT) {
@@ -462,6 +492,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
             final SamReader in = SamReaderFactory.makeDefault().referenceSequence(REFERENCE_SEQUENCE).open(f);
             readGroups.addAll(in.getFileHeader().getReadGroups());
 
+            List<PairedReadSequence> list = new ArrayList<>(BLOCK_RECORDS_NUMBER);
             for (final SAMRecord rec : in) {
                 if (!rec.getReadPairedFlag()) continue;
                 if (!rec.getFirstOfPairFlag() && !rec.getSecondOfPairFlag()) {
@@ -508,24 +539,31 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
                 }
 
                 if (prs.read1 != null && prs.read2 != null && prs.qualityOk) {
-                    final PairedReadSequence tmpPrs = prs;
-                    threadService.submit(() -> {
-                        synchronized (sorter) {
-                            sorter.add(tmpPrs);
-                        }
-                    });
+                    list.add(prs);
                 }
 
                 progress.record(rec);
+
+                if (list.size() < BLOCK_RECORDS_NUMBER) continue;
+
+                try {
+                    queue.put(list);
+                    list = new ArrayList<>(BLOCK_RECORDS_NUMBER);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                    System.exit(2);
+                }
             }
             CloserUtil.close(in);
         }
 
-        threadService.shutdown();
+        ReadingSequences.set(false);
+        service.shutdown();
         try {
-            threadService.awaitTermination(1, TimeUnit.DAYS);
+            service.awaitTermination(1, TimeUnit.DAYS);
         } catch (InterruptedException e) {
             e.printStackTrace();
+            System.exit(2);
         }
 
         log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates.", progress.getCount()));
@@ -620,6 +658,8 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
 
         file.write(OUTPUT);
 
+        long stop = System.nanoTime();
+        System.out.println("Time elapsed: " + ((stop - start) / 1000000));
         return 0;
     }
 
