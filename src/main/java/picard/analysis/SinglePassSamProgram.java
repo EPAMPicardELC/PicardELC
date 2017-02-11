@@ -74,11 +74,7 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
      */
     @Override
     protected final int doWork() {
-        System.out.println("Start counting time...");
-        long start = System.nanoTime();
         makeItSo(INPUT, REFERENCE_SEQUENCE, ASSUME_SORTED, STOP_AFTER, Arrays.asList(this));
-        long stop = System.nanoTime();
-        System.out.println("Elapsed time: " + (stop - start));
         return 0;
     }
 
