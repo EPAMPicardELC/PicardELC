@@ -1,3 +1,5 @@
+File "other.bam"
+
 Clear result
     real	1m5.779s
     user	1m10.363s
@@ -12,3 +14,9 @@ With queue and 2 separate threads for adding
     real	0m37.624s
     user	1m9.723s
     sys 	0m1.170s
+
+With pioson pill
+    Time elapsed: 35.135000s.
+    real	0m35.640s
+    user	1m5.997s
+    sys	0m1.367s

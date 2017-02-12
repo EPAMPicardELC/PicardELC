@@ -16,3 +16,4 @@ jacoco.data
 .gradle
 build
 resource*
+out.txt

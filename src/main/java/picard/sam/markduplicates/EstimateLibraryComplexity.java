@@ -433,7 +433,6 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
 
     private static final int BLOCK_RECORDS_NUMBER = 1000;
     private static final int QUEUE_CAPACITY = 40;
-    private static AtomicBoolean ReadingSequences = new AtomicBoolean(false);
 
     /**
      * Method that does most of the work.  Reads through the input BAM file and extracts the
@@ -462,16 +461,12 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
 
         final BlockingQueue<List<PairedReadSequence>> queue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
 
-        ReadingSequences.set(true);
         final ExecutorService service = Executors.newFixedThreadPool(3);
         service.submit(() -> {
             try {
-                while (ReadingSequences.get() || queue.size() > 0) {
-                    List<PairedReadSequence> list;
-                    if (queue.size() <= 0) {
-                        Thread.sleep(10);
-                        continue;
-                    } else list = queue.take();
+                while (true) {
+                    List<PairedReadSequence> list = queue.take();
+                    if (list.size() <= 0) break;
                     service.submit(() -> {
                         synchronized (sorter) {
                             for (PairedReadSequence sequence : list) {
@@ -557,7 +552,14 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
             CloserUtil.close(in);
         }
 
-        ReadingSequences.set(false);
+        //ReadingSequences.set(false);
+        try {
+            queue.put(new ArrayList<>(0));
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+            System.exit(2);
+        }
+
         service.shutdown();
         try {
             service.awaitTermination(1, TimeUnit.DAYS);
@@ -659,7 +661,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         file.write(OUTPUT);
 
         long stop = System.nanoTime();
-        System.out.println("Time elapsed: " + ((stop - start) / 1000000));
+        System.out.println(String.format("Time elapsed: %fs.", ((double)((stop - start) / 1000000))/1000));
         return 0;
     }
 
