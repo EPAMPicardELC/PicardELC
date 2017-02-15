@@ -45,6 +45,7 @@ import picard.cmdline.StandardOptionDefinitions;
 import picard.cmdline.programgroups.Metrics;
 import picard.sam.DuplicationMetrics;
 import picard.sam.markduplicates.util.AbstractOpticalDuplicateFinderCommandLineProgram;
+import picard.sam.markduplicates.util.ConcurrentSortingCollection;
 import picard.sam.util.PhysicalLocationShort;
 
 import java.io.DataInputStream;
@@ -209,7 +210,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
 
         public void setLibraryId(final short libraryId) { this.libraryId = libraryId; }
 
-        public static SortingCollection.Codec<PairedReadSequence> getCodec() {
+        public static ConcurrentSortingCollection.Codec<PairedReadSequence> getCodec() {
             return new PairedReadCodec();
         }
 
@@ -268,7 +269,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
     /**
      * Codec class for writing and read PairedReadSequence objects.
      */
-    static class PairedReadCodec implements SortingCollection.Codec<PairedReadSequence> {
+    static class PairedReadCodec implements ConcurrentSortingCollection.Codec<PairedReadSequence> {
         protected DataOutputStream out;
         protected DataInputStream in;
 
@@ -327,7 +328,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         }
 
         @Override
-        public SortingCollection.Codec<PairedReadSequence> clone() { return new PairedReadCodec(); }
+        public ConcurrentSortingCollection.Codec<PairedReadSequence> clone() { return new PairedReadCodec(); }
     }
 
 
@@ -370,7 +371,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         }
 
         @Override
-        public SortingCollection.Codec<PairedReadSequence> clone() { return new PairedReadWithBarcodesCodec(); }
+        public ConcurrentSortingCollection.Codec<PairedReadSequence> clone() { return new PairedReadWithBarcodesCodec(); }
     }
 
     /**
@@ -436,7 +437,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
 
     /**
      * Method that does most of the work.  Reads through the input BAM file and extracts the
-     * read sequences of each read pair and sorts them via a SortingCollection.  Then traverses
+     * read sequences of each read pair and sorts them via a ConcurrentSortingCollection.  Then traverses
      * the sorted reads and looks at small groups at a time to find duplicates.
      */
     @Override
@@ -449,8 +450,11 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         final List<SAMReadGroupRecord> readGroups = new ArrayList<SAMReadGroupRecord>();
         final boolean useBarcodes = (null != BARCODE_TAG || null != READ_ONE_BARCODE_TAG || null != READ_TWO_BARCODE_TAG);
 
-        final SortingCollection<PairedReadSequence> sorter =
-                SortingCollection.newInstance(
+        final ExecutorService service = Executors.newFixedThreadPool(5);
+
+        final ConcurrentSortingCollection<PairedReadSequence> sorter =
+                ConcurrentSortingCollection.newInstance(
+                    service,
                     PairedReadSequence.class,
                     useBarcodes?
                             new PairedReadWithBarcodesCodec() :
@@ -461,19 +465,14 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
 
         final BlockingQueue<List<PairedReadSequence>> queue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
 
-        final ExecutorService service = Executors.newFixedThreadPool(3);
         service.submit(() -> {
             try {
                 while (true) {
-                    List<PairedReadSequence> list = queue.take();
-                    if (list.size() <= 0) break;
-                    service.submit(() -> {
-                        synchronized (sorter) {
-                            for (PairedReadSequence sequence : list) {
-                                sorter.add(sequence);
-                            }
-                        }
-                    });
+                    List<PairedReadSequence> list;
+                    if ((list = queue.take()).size() <= 0) break;
+                    for (PairedReadSequence sequence : list) {
+                        sorter.add(sequence);
+                    }
                 }
             } catch (InterruptedException e) {
                 e.printStackTrace();
@@ -555,14 +554,6 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         //ReadingSequences.set(false);
         try {
             queue.put(new ArrayList<>(0));
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-            System.exit(2);
-        }
-
-        service.shutdown();
-        try {
-            service.awaitTermination(1, TimeUnit.DAYS);
         } catch (InterruptedException e) {
             e.printStackTrace();
             System.exit(2);
