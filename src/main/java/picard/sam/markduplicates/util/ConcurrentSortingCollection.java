@@ -140,9 +140,7 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
         final int nRecords = numRecordsInRam;
         this.ramRecords = (T[])Array.newInstance(componentType, maxRecordsInRam);
         numRecordsInRam = 0;
-        executor.submit(() -> {
-            spillToDisk(records, nRecords, codec.clone());
-        });
+        executor.submit(() -> spillToDisk(records, nRecords, codec.clone()));
     }
 
     public void add(final T rec) {
@@ -215,7 +213,7 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
             try {
                 os = tempStreamFactory.wrapTempOutputStream(new FileOutputStream(f), Defaults.BUFFER_SIZE);
                 codec.setOutputStream(os);
-                for (int i = 0; i < this.numRecordsInRam; ++i) {
+                for (int i = 0; i < nRecords; ++i) {
                     codec.encode(records[i]);
                     // Facilitate GC
                     records[i] = null;
