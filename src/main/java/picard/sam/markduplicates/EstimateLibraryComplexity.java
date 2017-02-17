@@ -55,6 +55,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static java.lang.Math.pow;
 
@@ -113,6 +116,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
             "Please see the documentation for the companion " +
             "<a href='https://broadinstitute.github.io/picard/command-line-overview.html#MarkDuplicates'>MarkDuplicates</a> tool." +
             "<hr />";
+    public static final int I = 100;
     @Option(shortName = StandardOptionDefinitions.INPUT_SHORT_NAME, doc = "One or more files to combine and " +
             "estimate library complexity from. Reads can be mapped or unmapped.")
     public List<File> INPUT;
@@ -428,6 +432,8 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         MAX_RECORDS_IN_RAM = (int) (Runtime.getRuntime().maxMemory() / sizeInBytes) / 2;
     }
 
+    public static final int MAX_THREADS_COUNT = 100;
+
     /**
      * Method that does most of the work.  Reads through the input BAM file and extracts the
      * read sequences of each read pair and sorts them via a SortingCollection.  Then traverses
@@ -457,6 +463,8 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
                     TMP_DIR);
         }
 
+        ExecutorService service = Executors.newFixedThreadPool(MAX_THREADS_COUNT);
+
         // Loop through the input files and pick out the read sequences etc.
         final ProgressLogger progress = new ProgressLogger(log, (int) 1e6, "Read");
         for (final File f : INPUT) {
@@ -471,49 +479,57 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
                 }
                 if (rec.isSecondaryOrSupplementary()) continue;
 
-                PairedReadSequence prs = pendingByName.remove(rec.getReadName());
-                if (prs == null) {
-                    // Make a new paired read object and add RG and physical location information to it
-                    prs = useBarcodes ? new PairedReadSequenceWithBarcodes() : new PairedReadSequence();
-                    if (opticalDuplicateFinder.addLocationInformation(rec.getReadName(), prs)) {
-                        final SAMReadGroupRecord rg = rec.getReadGroup();
-                        if (rg != null) prs.setReadGroup((short) readGroups.indexOf(rg));
+                service.submit(() -> {
+                    PairedReadSequence prs = pendingByName.remove(rec.getReadName());
+                    if (prs == null) {
+                        // Make a new paired read object and add RG and physical location information to it
+                        prs = useBarcodes ? new PairedReadSequenceWithBarcodes() : new PairedReadSequence();
+                        if (opticalDuplicateFinder.addLocationInformation(rec.getReadName(), prs)) {
+                            final SAMReadGroupRecord rg = rec.getReadGroup();
+                            if (rg != null) prs.setReadGroup((short) readGroups.indexOf(rg));
+                        }
+
+                        pendingByName.put(rec.getReadName(), prs);
                     }
 
-                    pendingByName.put(rec.getReadName(), prs);
-                }
+                    // Read passes quality check if both ends meet the mean quality criteria
+                    final boolean passesQualityCheck = passesQualityCheck(rec.getReadBases(),
+                            rec.getBaseQualities(),
+                            MIN_IDENTICAL_BASES,
+                            MIN_MEAN_QUALITY);
+                    prs.qualityOk = prs.qualityOk && passesQualityCheck;
 
-                // Read passes quality check if both ends meet the mean quality criteria
-                final boolean passesQualityCheck = passesQualityCheck(rec.getReadBases(),
-                        rec.getBaseQualities(),
-                        MIN_IDENTICAL_BASES,
-                        MIN_MEAN_QUALITY);
-                prs.qualityOk = prs.qualityOk && passesQualityCheck;
+                    // Get the bases and restore them to their original orientation if necessary
+                    final byte[] bases = rec.getReadBases();
+                    if (rec.getReadNegativeStrandFlag()) SequenceUtil.reverseComplement(bases);
 
-                // Get the bases and restore them to their original orientation if necessary
-                final byte[] bases = rec.getReadBases();
-                if (rec.getReadNegativeStrandFlag()) SequenceUtil.reverseComplement(bases);
+                    final PairedReadSequenceWithBarcodes prsWithBarcodes = (useBarcodes) ? (PairedReadSequenceWithBarcodes) prs : null;
 
-                final PairedReadSequenceWithBarcodes prsWithBarcodes = (useBarcodes) ? (PairedReadSequenceWithBarcodes) prs : null;
-
-                if (rec.getFirstOfPairFlag()) {
-                    prs.read1 = bases;
-                    if (useBarcodes) {
-                        prsWithBarcodes.barcode = getBarcodeValue(rec);
-                        prsWithBarcodes.readOneBarcode = getReadOneBarcodeValue(rec);
+                    if (rec.getFirstOfPairFlag()) {
+                        prs.read1 = bases;
+                        if (useBarcodes) {
+                            prsWithBarcodes.barcode = getBarcodeValue(rec);
+                            prsWithBarcodes.readOneBarcode = getReadOneBarcodeValue(rec);
+                        }
+                    } else {
+                        prs.read2 = bases;
+                        if (useBarcodes) {
+                            prsWithBarcodes.readTwoBarcode = getReadTwoBarcodeValue(rec);
+                        }
                     }
-                } else {
-                    prs.read2 = bases;
-                    if (useBarcodes) {
-                        prsWithBarcodes.readTwoBarcode = getReadTwoBarcodeValue(rec);
+
+                    if (prs.read1 != null && prs.read2 != null && prs.qualityOk) {
+                        sorter.add(prs);
                     }
-                }
 
-                if (prs.read1 != null && prs.read2 != null && prs.qualityOk) {
-                    sorter.add(prs);
-                }
-
-                progress.record(rec);
+                    progress.record(rec);
+                });
+            }
+            service.shutdown();
+            try {
+                service.awaitTermination(1, TimeUnit.DAYS);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
             }
             CloserUtil.close(in);
         }
