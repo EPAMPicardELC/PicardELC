@@ -1,2 +1,3 @@
 #!/bin/bash
-time java -jar build/libs/picard.jar EstimateLibraryComplexity I=resource/other.bam O=out.txt
+gradle currentJar && \
+time java -Xmx3g -jar build/libs/picard.jar EstimateLibraryComplexity I=resource/big.bam O=out.txt
