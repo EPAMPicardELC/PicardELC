@@ -474,7 +474,8 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
             final SamReader in = SamReaderFactory.makeDefault().referenceSequence(REFERENCE_SEQUENCE).open(f);
             readGroups.addAll(in.getFileHeader().getReadGroups());
 
-            ArrayList<SAMReadGroupRecord> tmpReadGroups = new ArrayList<>(readGroups);
+            //todo unmodifiable list
+            ArrayList<SAMReadGroupRecord> tmpReadGroups = Lists.new ArrayList<>(readGroups);
 
             service.submit(() -> {
                 try {
@@ -593,6 +594,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
             //todo: add queue and lists
             list.add(getNextGroup(iterator));
 
+            //todo: add processing of last group
             if (list.size() < GROUPS_BLOCK_RECORDS_NUMBER) continue;
             final ArrayList<List<PairedReadSequence>> tmpList = list;
             list = new ArrayList<>(GROUPS_BLOCK_RECORDS_NUMBER);

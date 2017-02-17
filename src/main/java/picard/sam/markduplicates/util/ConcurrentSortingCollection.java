@@ -129,7 +129,7 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
         this.tmpDirs = tmpDir;
         this.codec = codec;
         this.comparator = comparator;
-        this.maxRecordsInRam = maxRecordsInRam;
+        this.maxRecordsInRam = maxRecordsInRam/2;
         this.componentType = componentType;
         this.executor = service;
         this.ramRecords = (T[])Array.newInstance(componentType, maxRecordsInRam);
