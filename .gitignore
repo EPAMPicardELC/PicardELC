@@ -8,7 +8,6 @@ contracts
 atlassian-ide-plugin.xml
 intellij.testclasses
 intellij.classes
-htsjdk
 .idea
 target
 report
