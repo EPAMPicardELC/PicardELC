@@ -55,6 +55,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static java.lang.Math.pow;
 
@@ -414,9 +416,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
     }
 
     /** Stock main method. */
-    public static void main(final String[] args) {
-        new EstimateLibraryComplexity().instanceMainWithExit(args);
-    }
+    public static void main(final String[] args) { new EstimateLibraryComplexity().instanceMainWithExit(args);}
 
     public EstimateLibraryComplexity() {
         final int sizeInBytes;
@@ -457,6 +457,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
                     TMP_DIR);
         }
 
+        ExecutorService service = Executors.newCachedThreadPool();
         // Loop through the input files and pick out the read sequences etc.
         final ProgressLogger progress = new ProgressLogger(log, (int) 1e6, "Read");
         for (final File f : INPUT) {
@@ -509,9 +510,13 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
                     }
                 }
 
+                //завершить параллелизм
                 if (prs.read1 != null && prs.read2 != null && prs.qualityOk) {
-                    sorter.add(prs);
-                }
+                                sorter.add(prs);
+                            }
+
+
+
 
                 progress.record(rec);
             }
