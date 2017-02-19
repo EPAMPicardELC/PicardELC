@@ -29,6 +29,7 @@ import htsjdk.samtools.util.*;
 import java.io.*;
 import java.lang.reflect.Array;
 import java.util.*;
+import java.util.concurrent.*;
 
 /**
  * Collection to which many records can be added.  After all records are added, the collection can be
@@ -103,6 +104,14 @@ public class SortingCollection<T> implements Iterable<T> {
     private boolean iterationStarted = false;
     private boolean doneAdding = false;
 
+    private Exchanger<T[]> ram_to_sort_ex;
+    private Exchanger<T[]> sort_to_spill_ex;
+
+    private Sorter sorter;
+    private Spiller spiller;
+
+    private ExecutorService service;
+
     /**
      * Set to true when all temp files have been cleaned up
      */
@@ -125,6 +134,7 @@ public class SortingCollection<T> implements Iterable<T> {
      * @param maxRecordsInRam how many records to accumulate before spilling to disk
      * @param tmpDir Where to write files of records that will not fit in RAM
      */
+
     private SortingCollection(final Class<T> componentType, final SortingCollection.Codec<T> codec,
                               final Comparator<T> comparator, final int maxRecordsInRam, final File... tmpDir) {
         if (maxRecordsInRam <= 0) {
@@ -138,8 +148,85 @@ public class SortingCollection<T> implements Iterable<T> {
         this.tmpDirs = tmpDir;
         this.codec = codec;
         this.comparator = comparator;
-        this.maxRecordsInRam = maxRecordsInRam;
-        this.ramRecords = (T[])Array.newInstance(componentType, maxRecordsInRam);
+        this.maxRecordsInRam = maxRecordsInRam / 3;
+        this.ramRecords = (T[])Array.newInstance(componentType, this.maxRecordsInRam);
+
+        this.ram_to_sort_ex = new Exchanger<>();
+        this.sort_to_spill_ex = new Exchanger<>();
+
+        this.sorter = new Sorter(componentType, ram_to_sort_ex, sort_to_spill_ex);
+        this.spiller = new Spiller(componentType, sort_to_spill_ex);
+
+        this.service = Executors.newFixedThreadPool(2);
+        //this.compType = componentType;
+    }
+
+    private class Sorter implements Runnable {
+        private Exchanger<T[]> ram_to_sort;
+        private Exchanger<T[]> sort_to_spill;
+        private T[] records;
+        private int length;
+
+        Sorter(final Class<T> componentType, Exchanger<T[]> ram_to_sort, Exchanger<T[]> sort_to_spill){
+            this.ram_to_sort = ram_to_sort;
+            this.sort_to_spill = sort_to_spill;
+            this.records = (T[])Array.newInstance(componentType, maxRecordsInRam);
+        }
+
+        @Override
+        public void run() {
+            try {
+                records = ram_to_sort.exchange(records);
+                Arrays.sort(records, 0, length, comparator);
+                spiller.length = this.length;
+                records = sort_to_spill.exchange(records);
+            } catch (InterruptedException ie) {
+                System.err.println(ie);
+            }
+        }
+    }
+
+    private class Spiller implements Runnable {
+        private Exchanger<T[]> sort_to_spill;
+        private T[] records;
+        private int length;
+
+        Spiller(final Class<T> componentType, Exchanger<T[]> sort_to_spill){
+            this.sort_to_spill = sort_to_spill;
+            this.records = (T[])Array.newInstance(componentType, maxRecordsInRam);
+        }
+
+        @Override
+        public void run() {
+            try {
+                records = sort_to_spill.exchange(records);
+                final File f = newTempFile();
+                OutputStream os = null;
+                try {
+                    os = tempStreamFactory.wrapTempOutputStream(new FileOutputStream(f), Defaults.BUFFER_SIZE);
+                    codec.setOutputStream(os);
+                    for (int i = 0; i < length; ++i) {
+                        codec.encode(records[i]);
+                        // Facilitate GC
+                        records[i] = null;
+                    }
+
+                    os.flush();
+                } catch (RuntimeIOException ex) {
+                    throw new RuntimeIOException("Problem writing temporary file " + f.getAbsolutePath() +
+                            ".  Try setting TMP_DIR to a file system with lots of space.", ex);
+                } finally {
+                    if (os != null) {
+                        os.close();
+                    }
+                }
+                files.add(f);
+            }
+            catch (IOException | InterruptedException e) {
+                System.err.println(e);
+                throw new RuntimeIOException(e);
+            }
+        }
     }
 
     public void add(final T rec) {
@@ -176,10 +263,24 @@ public class SortingCollection<T> implements Iterable<T> {
 
         if (this.numRecordsInRam > 0) {
             spillToDisk();
+            service.shutdown();
+            try {
+                // Wait a while for existing tasks to terminate
+                if (!service.awaitTermination(60, TimeUnit.SECONDS)) {
+                    service.shutdownNow();
+                    if (!service.awaitTermination(60, TimeUnit.SECONDS))
+                        System.err.println("Pool did not terminate");
+                }
+            } catch (InterruptedException ie) {
+                service.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
         }
 
         // Facilitate GC
         this.ramRecords = null;
+        this.sorter = null;
+        this.spiller = null;
     }
 
     /**
@@ -202,36 +303,15 @@ public class SortingCollection<T> implements Iterable<T> {
      * Sort the records in memory, write them to a file, and clear the buffer of records in memory.
      */
     private void spillToDisk() {
+        sorter.length = this.numRecordsInRam;
+        service.submit(sorter);
+        service.submit(spiller);
         try {
-            Arrays.sort(this.ramRecords, 0, this.numRecordsInRam, this.comparator);
-            final File f = newTempFile();
-            OutputStream os = null;
-            try {
-                os = tempStreamFactory.wrapTempOutputStream(new FileOutputStream(f), Defaults.BUFFER_SIZE);
-                this.codec.setOutputStream(os);
-                for (int i = 0; i < this.numRecordsInRam; ++i) {
-                    this.codec.encode(ramRecords[i]);
-                    // Facilitate GC
-                    this.ramRecords[i] = null;
-                }
-
-                os.flush();
-            } catch (RuntimeIOException ex) {
-                throw new RuntimeIOException("Problem writing temporary file " + f.getAbsolutePath() +
-                        ".  Try setting TMP_DIR to a file system with lots of space.", ex);
-            } finally {
-                if (os != null) {
-                    os.close();
-                }
-            }
-
-            this.numRecordsInRam = 0;
-            this.files.add(f);
-
+            ramRecords = ram_to_sort_ex.exchange(ramRecords);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
         }
-        catch (IOException e) {
-            throw new RuntimeIOException(e);
-        }
+        numRecordsInRam = 0;
     }
 
     /**
