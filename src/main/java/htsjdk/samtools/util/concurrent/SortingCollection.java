@@ -104,8 +104,8 @@ public class SortingCollection<T> implements Iterable<T> {
     private boolean iterationStarted = false;
     private boolean doneAdding = false;
 
-    private Exchanger<T[]> ram_to_sort_ex;
-    private Exchanger<T[]> sort_to_spill_ex;
+    private Exchanger<SwapObject> ram_to_sort_ex;
+    private Exchanger<SwapObject> sort_to_spill_ex;
 
     private Sorter sorter;
     private Spiller spiller;
@@ -158,16 +158,15 @@ public class SortingCollection<T> implements Iterable<T> {
         this.spiller = new Spiller(componentType, sort_to_spill_ex);
 
         this.service = Executors.newFixedThreadPool(2);
-        //this.compType = componentType;
     }
 
     private class Sorter implements Runnable {
-        private Exchanger<T[]> ram_to_sort;
-        private Exchanger<T[]> sort_to_spill;
+        private Exchanger<SwapObject> ram_to_sort;
+        private Exchanger<SwapObject> sort_to_spill;
         private T[] records;
         private int length;
 
-        Sorter(final Class<T> componentType, Exchanger<T[]> ram_to_sort, Exchanger<T[]> sort_to_spill){
+        Sorter(final Class<T> componentType, Exchanger<SwapObject> ram_to_sort, Exchanger<SwapObject> sort_to_spill){
             this.ram_to_sort = ram_to_sort;
             this.sort_to_spill = sort_to_spill;
             this.records = (T[])Array.newInstance(componentType, maxRecordsInRam);
@@ -176,10 +175,11 @@ public class SortingCollection<T> implements Iterable<T> {
         @Override
         public void run() {
             try {
-                records = ram_to_sort.exchange(records);
+                SwapObject object = ram_to_sort.exchange(new SwapObject(this.records, 0));
+                records = object.getArray();
+                length = object.getLength();
                 Arrays.sort(records, 0, length, comparator);
-                spiller.length = this.length;
-                records = sort_to_spill.exchange(records);
+                records = sort_to_spill.exchange(object).getArray();
             } catch (InterruptedException ie) {
                 System.err.println(ie);
             }
@@ -187,11 +187,11 @@ public class SortingCollection<T> implements Iterable<T> {
     }
 
     private class Spiller implements Runnable {
-        private Exchanger<T[]> sort_to_spill;
+        private Exchanger<SwapObject> sort_to_spill;
         private T[] records;
         private int length;
 
-        Spiller(final Class<T> componentType, Exchanger<T[]> sort_to_spill){
+        Spiller(final Class<T> componentType, Exchanger<SwapObject> sort_to_spill){
             this.sort_to_spill = sort_to_spill;
             this.records = (T[])Array.newInstance(componentType, maxRecordsInRam);
         }
@@ -199,7 +199,9 @@ public class SortingCollection<T> implements Iterable<T> {
         @Override
         public void run() {
             try {
-                records = sort_to_spill.exchange(records);
+                SwapObject object = sort_to_spill.exchange(new SwapObject(this.records, 0));
+                records = object.getArray();
+                length = object.getLength();
                 final File f = newTempFile();
                 OutputStream os = null;
                 try {
@@ -226,6 +228,24 @@ public class SortingCollection<T> implements Iterable<T> {
                 System.err.println(e);
                 throw new RuntimeIOException(e);
             }
+        }
+    }
+
+    private class SwapObject {
+        private T[] array;
+        private int length;
+
+        private SwapObject(T[] array, int length) {
+            this.array = array;
+            this.length = length;
+        }
+
+        public T[] getArray() {
+            return array;
+        }
+
+        public int getLength() {
+            return length;
         }
     }
 
@@ -303,11 +323,10 @@ public class SortingCollection<T> implements Iterable<T> {
      * Sort the records in memory, write them to a file, and clear the buffer of records in memory.
      */
     private void spillToDisk() {
-        sorter.length = this.numRecordsInRam;
         service.submit(sorter);
         service.submit(spiller);
         try {
-            ramRecords = ram_to_sort_ex.exchange(ramRecords);
+            ramRecords = ram_to_sort_ex.exchange(new SwapObject(this.ramRecords, numRecordsInRam)).getArray();
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
