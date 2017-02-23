@@ -55,6 +55,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static java.lang.Math.pow;
 
@@ -435,27 +437,23 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
      */
     @Override
     protected int doWork() {
+
         for (final File f : INPUT) IOUtil.assertFileIsReadable(f);
 
         log.info("Will store " + MAX_RECORDS_IN_RAM + " read pairs in memory before sorting.");
+
+        ExecutorService service = Executors.newCachedThreadPool();
 
         final List<SAMReadGroupRecord> readGroups = new ArrayList<SAMReadGroupRecord>();
         final SortingCollection<PairedReadSequence> sorter;
         final boolean useBarcodes = (null != BARCODE_TAG || null != READ_ONE_BARCODE_TAG || null != READ_TWO_BARCODE_TAG);
 
-        if (!useBarcodes) {
             sorter = SortingCollection.newInstance(PairedReadSequence.class,
-                    new PairedReadCodec(),
+                    useBarcodes ? new PairedReadWithBarcodesCodec() : new PairedReadCodec(),
                     new PairedReadComparator(),
                     MAX_RECORDS_IN_RAM,
                     TMP_DIR);
-        } else {
-            sorter = SortingCollection.newInstance(PairedReadSequence.class,
-                    new PairedReadWithBarcodesCodec(),
-                    new PairedReadComparator(),
-                    MAX_RECORDS_IN_RAM,
-                    TMP_DIR);
-        }
+
 
         // Loop through the input files and pick out the read sequences etc.
         final ProgressLogger progress = new ProgressLogger(log, (int) 1e6, "Read");
