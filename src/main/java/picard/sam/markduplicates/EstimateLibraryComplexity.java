@@ -564,12 +564,19 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
             if (index == 0){
                 try {
                     groups = queue.take();
-                    if (iterator.hasNext())
-                        queue.put(makeNewPack(iterator));
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 }
-            }
+
+                service.submit(() -> {
+                    if (iterator.hasNext())
+                        try {
+                            queue.put(makeNewPack(iterator));
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                });
+                }
 
             if (index == groups.size()) {
                 index = 0;
