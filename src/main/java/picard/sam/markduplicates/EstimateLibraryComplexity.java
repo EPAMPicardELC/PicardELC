@@ -55,8 +55,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.*;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 
 import static java.lang.Math.pow;
 
@@ -85,6 +87,11 @@ import static java.lang.Math.pow;
         programGroup = Metrics.class
 )
 public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCommandLineProgram {
+
+    private static final int MAX_THREADS_COUNT = 100;
+    private static final int PACK_QUEUE_SIZE = 10;
+    private static final int RECORDS_PACK_SIZE = 10000;
+
     static final String USAGE_SUMMARY = "Estimates the numbers of unique molecules in a sequencing library.  ";
     static final String USAGE_DETAILS = "<p>This tool outputs quality metrics for a sequencing library preparation." +
             "Library complexity refers to the number of unique DNA fragments present in a given library.  Reductions in complexity " +
@@ -457,7 +464,6 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
                     TMP_DIR);
         }
 
-        ExecutorService service = Executors.newCachedThreadPool();
         // Loop through the input files and pick out the read sequences etc.
         final ProgressLogger progress = new ProgressLogger(log, (int) 1e6, "Read");
         for (final File f : INPUT) {
@@ -543,9 +549,45 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
                 opticalDuplicateFinder
         );
 
-        while (iterator.hasNext()) {
+        //Adding queue and thread
+
+        BlockingQueue<ArrayList<List<PairedReadSequence>>> groupPackQueue = new LinkedBlockingQueue<>(PACK_QUEUE_SIZE);
+        ExecutorService service = Executors.newFixedThreadPool(MAX_THREADS_COUNT);
+
+        service.submit(() -> {
+            if (iterator.hasNext())
+                try {
+                    groupPackQueue.put(makeGroupPack(iterator));
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+        });
+
+        ArrayList<List<PairedReadSequence>> groups = new ArrayList<List<PairedReadSequence>>(RECORDS_PACK_SIZE);
+        int listIndex = 0;
+
+        while (iterator.hasNext() ||  groupPackQueue.size() != 0 || listIndex != groups.size()) {
             // Get the next group and split it apart by library
-            final List<PairedReadSequence> group = getNextGroup(iterator);
+            if(listIndex == 0) {
+                try {
+                    groups = groupPackQueue.take();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+                service.submit(() -> {
+                    if (iterator.hasNext())
+                        try {
+                            groupPackQueue.put(makeGroupPack((iterator)));
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                });
+            }
+            if (listIndex == groups.size()) {
+                listIndex = 0;
+                continue;
+            }
+            List<PairedReadSequence> group = groups.get(listIndex++);
 
             if (group.size() > meanGroupSize * MAX_GROUP_RATIO) {
                 final PairedReadSequence prs = group.get(0);
@@ -582,6 +624,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
             }
         }
 
+        service.shutdownNow();
         iterator.close();
         sorter.cleanup();
 
@@ -613,6 +656,13 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         file.write(OUTPUT);
 
         return 0;
+    }
+
+    private ArrayList<List<PairedReadSequence>> makeGroupPack(PeekableIterator<PairedReadSequence> iterator) {
+        ArrayList<List<PairedReadSequence>> groupPack = new ArrayList<>(RECORDS_PACK_SIZE);
+        for(int i = 0; i < RECORDS_PACK_SIZE && iterator.hasNext(); i++)
+            groupPack.add(getNextGroup(iterator));
+        return groupPack;
     }
 
     /**
