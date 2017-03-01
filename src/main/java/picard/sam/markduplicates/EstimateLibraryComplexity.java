@@ -561,7 +561,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         while (iterator.hasNext() || index != groups.size() || queue.size() != 0) {
             // Get the next group and split it apart by library
 
-            if (index == 0){
+            if (index == 0) {
                 try {
                     groups = queue.take();
                 } catch (InterruptedException e) {
@@ -576,7 +576,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
                             e.printStackTrace();
                         }
                 });
-                }
+            }
 
             if (index == groups.size()) {
                 index = 0;
