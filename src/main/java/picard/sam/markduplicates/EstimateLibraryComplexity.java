@@ -55,8 +55,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.*;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 
 import static java.lang.Math.pow;
 
@@ -115,6 +114,10 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
             "Please see the documentation for the companion " +
             "<a href='https://broadinstitute.github.io/picard/command-line-overview.html#MarkDuplicates'>MarkDuplicates</a> tool." +
             "<hr />";
+
+
+    private static final int BLOCK_SIZE = 10000;
+
     @Option(shortName = StandardOptionDefinitions.INPUT_SHORT_NAME, doc = "One or more files to combine and " +
             "estimate library complexity from. Reads can be mapped or unmapped.")
     public List<File> INPUT;
@@ -437,12 +440,9 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
      */
     @Override
     protected int doWork() {
-
         for (final File f : INPUT) IOUtil.assertFileIsReadable(f);
 
         log.info("Will store " + MAX_RECORDS_IN_RAM + " read pairs in memory before sorting.");
-
-        ExecutorService service = Executors.newCachedThreadPool();
 
         final List<SAMReadGroupRecord> readGroups = new ArrayList<SAMReadGroupRecord>();
         final SortingCollection<PairedReadSequence> sorter;
@@ -453,7 +453,6 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
                     new PairedReadComparator(),
                     MAX_RECORDS_IN_RAM,
                     TMP_DIR);
-
 
         // Loop through the input files and pick out the read sequences etc.
         final ProgressLogger progress = new ProgressLogger(log, (int) 1e6, "Read");
@@ -536,9 +535,47 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
                 opticalDuplicateFinder
         );
 
-        while (iterator.hasNext()) {
+        BlockingQueue<ArrayList<List<PairedReadSequence>>> queue = new LinkedBlockingQueue<>();
+        ExecutorService service = Executors.newSingleThreadExecutor();
+
+        service.submit(() -> {
+            try {
+                if (iterator.hasNext())
+                    queue.put(newBlock(iterator));
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        });
+
+        ArrayList<List<PairedReadSequence>> groups = new ArrayList<>(BLOCK_SIZE);
+        int index = 0;
+
+        while (iterator.hasNext() || index != groups.size() || queue.size() != 0) {
             // Get the next group and split it apart by library
-            final List<PairedReadSequence> group = getNextGroup(iterator);
+            if (index == groups.size()) {
+                index = 0;
+            }
+
+            if (index == 0){
+                try {
+                    groups = queue.take();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+
+                service.submit(() -> {
+                    if (iterator.hasNext())
+                        try {
+                            queue.put(newBlock(iterator));
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+
+                });
+            }
+
+
+            List<PairedReadSequence> group = groups.get(index++);
 
             if (group.size() > meanGroupSize * MAX_GROUP_RATIO) {
                 final PairedReadSequence prs = group.get(0);
@@ -575,6 +612,8 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
             }
         }
 
+        service.shutdown();
+
         iterator.close();
         sorter.cleanup();
 
@@ -606,6 +645,13 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         file.write(OUTPUT);
 
         return 0;
+    }
+
+    private ArrayList<List<PairedReadSequence>> newBlock(final PeekableIterator<PairedReadSequence> iterator){
+        ArrayList<List<PairedReadSequence>> pack = new ArrayList<>(BLOCK_SIZE);
+        for (int i = 0; i < BLOCK_SIZE && iterator.hasNext(); i++)
+            pack.add(getNextGroup(iterator));
+        return pack;
     }
 
     /**
