@@ -115,7 +115,6 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
             "<a href='https://broadinstitute.github.io/picard/command-line-overview.html#MarkDuplicates'>MarkDuplicates</a> tool." +
             "<hr />";
     public static final int I = 100;
-    private static final int MAX_THREADS_COUNT = 100;
     private static final int PACK_SIZE = 10000;
 
     @Option(shortName = StandardOptionDefinitions.INPUT_SHORT_NAME, doc = "One or more files to combine and " +
@@ -544,7 +543,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         );
 
         BlockingQueue<ArrayList<List<PairedReadSequence>>> queue = new LinkedBlockingDeque<>();
-        ExecutorService service = Executors.newFixedThreadPool(MAX_THREADS_COUNT);
+        ExecutorService service = Executors.newCachedThreadPool();
 
         service.submit(() -> {
             try {
