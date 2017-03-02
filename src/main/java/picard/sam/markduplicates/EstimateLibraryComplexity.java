@@ -590,8 +590,8 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         service.submit(() -> {
             try {
                 while (true) {
-                    List<List<PairedReadSequence>> list;
-                    if ((list = sortedRecordsQueue.take()).size() <= 0) break;
+                    List<List<PairedReadSequence>> list = (list = sortedRecordsQueue.take());
+                    if (list.size() <= 0) break;
                     for (List<PairedReadSequence> group: list) {
                         if (group.size() > meanGroupSize * MAX_GROUP_RATIO) {
                             final PairedReadSequence prs = group.get(0);
@@ -645,6 +645,8 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
 
             try {
                 sortedRecordsQueue.put(list);
+                //System.out.println("list size: " + list.size());
+                //System.out.println("queue last elem: " + sortedRecordsQueue.peek().size());
                 list = new ArrayList<>(GROUPS_BLOCK_RECORDS_NUMBER);
             } catch (InterruptedException e) {
                 e.printStackTrace();
@@ -655,7 +657,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         try {
             if (list.size() > 0)
                 sortedRecordsQueue.put(list);
-            queue.put(new ArrayList<>(0));
+            sortedRecordsQueue.put(new ArrayList<>(0));
             service.shutdown();
             service.awaitTermination(4, TimeUnit.DAYS);
         } catch (InterruptedException e) {
@@ -665,6 +667,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
 
         iterator.close();
         sorter.cleanup();
+
 
         final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
         for (final String library : duplicationHistosByLibrary.keySet()) {
