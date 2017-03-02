@@ -546,12 +546,12 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         ExecutorService service = Executors.newCachedThreadPool();
 
         service.submit(() -> {
-            try {
-                if (iterator.hasNext())
+            while (iterator.hasNext())
+                try {
                     queue.put(makeNewPack(iterator));
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
         });
 
         ArrayList<List<PairedReadSequence>> groups = new ArrayList<>(PACK_SIZE);
@@ -566,15 +566,6 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 }
-
-                service.submit(() -> {
-                    if (iterator.hasNext())
-                        try {
-                            queue.put(makeNewPack(iterator));
-                        } catch (InterruptedException e) {
-                            e.printStackTrace();
-                        }
-                });
             }
 
             if (index == groups.size()) {
