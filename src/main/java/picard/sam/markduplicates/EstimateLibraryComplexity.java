@@ -55,6 +55,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.*;
+import java.util.concurrent.*;
 
 import static java.lang.Math.pow;
 
@@ -113,6 +114,9 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
             "Please see the documentation for the companion " +
             "<a href='https://broadinstitute.github.io/picard/command-line-overview.html#MarkDuplicates'>MarkDuplicates</a> tool." +
             "<hr />";
+    public static final int I = 100;
+    private static final int PACK_SIZE = 10000;
+
     @Option(shortName = StandardOptionDefinitions.INPUT_SHORT_NAME, doc = "One or more files to combine and " +
             "estimate library complexity from. Reads can be mapped or unmapped.")
     public List<File> INPUT;
@@ -538,9 +542,47 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
                 opticalDuplicateFinder
         );
 
-        while (iterator.hasNext()) {
+        BlockingQueue<ArrayList<List<PairedReadSequence>>> queue = new LinkedBlockingDeque<>();
+        ExecutorService service = Executors.newCachedThreadPool();
+
+        service.submit(() -> {
+            try {
+                if (iterator.hasNext())
+                    queue.put(makeNewPack(iterator));
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        });
+
+        ArrayList<List<PairedReadSequence>> groups = new ArrayList<>(PACK_SIZE);
+        int index = 0;
+
+        while (iterator.hasNext() || index != groups.size() || queue.size() != 0) {
             // Get the next group and split it apart by library
-            final List<PairedReadSequence> group = getNextGroup(iterator);
+
+            if (index == 0) {
+                try {
+                    groups = queue.take();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+
+                service.submit(() -> {
+                    if (iterator.hasNext())
+                        try {
+                            queue.put(makeNewPack(iterator));
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                });
+            }
+
+            if (index == groups.size()) {
+                index = 0;
+                continue;
+            }
+
+            List<PairedReadSequence> group = groups.get(index++);
 
             if (group.size() > meanGroupSize * MAX_GROUP_RATIO) {
                 final PairedReadSequence prs = group.get(0);
@@ -577,6 +619,8 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
             }
         }
 
+        service.shutdownNow();
+
         iterator.close();
         sorter.cleanup();
 
@@ -608,6 +652,13 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         file.write(OUTPUT);
 
         return 0;
+    }
+
+    private ArrayList<List<PairedReadSequence>> makeNewPack(final PeekableIterator<PairedReadSequence> iterator){
+        ArrayList<List<PairedReadSequence>> pack = new ArrayList<>(PACK_SIZE);
+        for (int i = 0; i < PACK_SIZE && iterator.hasNext(); i++)
+            pack.add(getNextGroup(iterator));
+        return pack;
     }
 
     /**
