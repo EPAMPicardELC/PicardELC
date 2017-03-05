@@ -2,6 +2,8 @@ package picard;
 
 
 import org.openjdk.jmh.annotations.Benchmark;
+import org.openjdk.jmh.annotations.BenchmarkMode;
+import org.openjdk.jmh.annotations.Mode;
 import org.openjdk.jmh.runner.Runner;
 import org.openjdk.jmh.runner.RunnerException;
 import org.openjdk.jmh.runner.options.Options;
@@ -13,9 +15,10 @@ import picard.sam.markduplicates.EstimateLibraryComplexity;
  */
 public class MyBenchmark {
 
+    @BenchmarkMode(Mode.All)
     @Benchmark
     public void bench() {
-        String[] args =  { "I=resource/small.bam", "O=out.txt", "VALIDATION_STRINGENCY=LENIENT" };
+        String[] args =  { "I=resource/verysmall.bam", "O=out.txt", "VALIDATION_STRINGENCY=LENIENT" };
         EstimateLibraryComplexity.main(args);
     }
 

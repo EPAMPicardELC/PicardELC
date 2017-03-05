@@ -569,6 +569,9 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         // Now go through the sorted reads and attempt to find duplicates
         final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<>(sorter.iterator());
 
+        if (service.isShutdown())
+            service = Executors.newFixedThreadPool(10);
+
         final Map<String, Histogram<Integer>> duplicationHistosByLibrary = new ConcurrentHashMap<>();
         final Map<String, Histogram<Integer>> opticalHistosByLibrary = new ConcurrentHashMap<>();
 
@@ -583,15 +586,13 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
                 useBarcodes,
                 opticalDuplicateFinder
         );
-
-        service = Executors.newFixedThreadPool(10);
         final BlockingQueue<List<List<PairedReadSequence>>> sortedRecordsQueue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
 
         service.submit(() -> {
             try {
                 while (true) {
-                    List<List<PairedReadSequence>> list = (list = sortedRecordsQueue.take());
-                    if (list.size() <= 0) break;
+                    List<List<PairedReadSequence>> list;
+                    if ((list = sortedRecordsQueue.take()).size() <= 0) break;
                     for (List<PairedReadSequence> group: list) {
                         if (group.size() > meanGroupSize * MAX_GROUP_RATIO) {
                             final PairedReadSequence prs = group.get(0);
@@ -645,8 +646,6 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
 
             try {
                 sortedRecordsQueue.put(list);
-                //System.out.println("list size: " + list.size());
-                //System.out.println("queue last elem: " + sortedRecordsQueue.peek().size());
                 list = new ArrayList<>(GROUPS_BLOCK_RECORDS_NUMBER);
             } catch (InterruptedException e) {
                 e.printStackTrace();
@@ -662,6 +661,11 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
             service.awaitTermination(4, TimeUnit.DAYS);
         } catch (InterruptedException e) {
             e.printStackTrace();
+            System.exit(1);
+        }
+
+        if (!service.isShutdown()) {
+            System.out.println("Service 2 did not shutdown. Exiting.");
             System.exit(1);
         }
 

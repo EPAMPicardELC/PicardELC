@@ -172,6 +172,8 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
         doneAdding = true;
 
         if (this.files.isEmpty()) {
+            executor.shutdown();
+            executor.awaitTermination(4, TimeUnit.DAYS);
             return;
         }
 

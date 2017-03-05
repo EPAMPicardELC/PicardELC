@@ -141,7 +141,7 @@ public abstract class CommandLineProgram {
     protected abstract int doWork();
 
     public void instanceMainWithExit(final String[] argv) {
-        System.exit(instanceMain(argv));
+        instanceMain(argv);
     }
 
     public int instanceMain(final String[] argv) {

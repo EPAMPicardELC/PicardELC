@@ -75,10 +75,10 @@ dependencies {
 jmh {
     duplicateClassesStrategy = 'warn'
     include = '.*'
-    warmupForks = 1
+    warmupForks = 2
     warmupIterations = 1
     fork = 1
-    iterations = 1
+    iterations = 2
     humanOutputFile = null
 }
 
